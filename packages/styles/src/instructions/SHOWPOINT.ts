@@ -49,6 +49,7 @@ export function SY(
       layout: {
         "symbol-placement": "point",
         "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
         "icon-image": symbol.name,
         "icon-offset": data.offset,
         ...(rotate !== 0 ? { "icon-rotate": rotate } : {}),
