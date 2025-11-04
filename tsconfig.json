@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
-    "target": "ESNext",
+    "target": "ES2022",
     "module": "ESNext",
-    "lib": ["esnext"],
+    "lib": ["ESNext"],
     "outDir": "${configDir}/dist",
     "tsBuildInfoFile": "${configDir}/dist/.tsbuildinfo",
     "rootDir": "${configDir}/src",

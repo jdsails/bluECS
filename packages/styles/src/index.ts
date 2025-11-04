@@ -32,7 +32,7 @@ export default function ({
     version: 8,
     name,
     sprite: [...(sprite ? [sprite] : []), mode.toLowerCase()].join("/"),
-    glyphs: "http://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
+    glyphs: "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
     sources: {
       [config.source]: {
         promoteId: "LNAM",

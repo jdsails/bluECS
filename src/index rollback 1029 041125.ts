@@ -261,7 +261,6 @@ class RouteDrawControl implements maplibregl.IControl {
   private map?: maplibregl.Map;
   private drawing = false;
   private waypoints: [number, number][] = [];
-  private waypointNames: string[] = [];
   private markers: maplibregl.Marker[] = [];
 
   onAdd(map: maplibregl.Map) {
@@ -330,16 +329,6 @@ class RouteDrawControl implements maplibregl.IControl {
       });
     }
 
-    // Add contextmenu event listeners for route-line and route-waypoints layers
-    map.on("contextmenu", "route-line", (e) => {
-      e.preventDefault();
-      this._showContextMenu("line", e);
-    });
-    map.on("contextmenu", "route-waypoints", (e) => {
-      e.preventDefault();
-      this._showContextMenu("waypoint", e);
-    });
-
     return this.container;
   }
 
@@ -360,15 +349,7 @@ class RouteDrawControl implements maplibregl.IControl {
 
     // Store the waypoint and its marker
     this.waypoints.push(coord);
-    this.waypointNames.push("");
     this.markers.push(marker);
-
-    // Set marker title if name exists
-    if (this.waypointNames[this.waypoints.length - 1]) {
-      marker
-        .getElement()
-        .setAttribute("title", this.waypointNames[this.waypoints.length - 1]);
-    }
 
     // 🖱️ Hover feedback
     el.addEventListener("mouseenter", () => {
@@ -397,15 +378,7 @@ class RouteDrawControl implements maplibregl.IControl {
         this._updateRouteSource();
       }
     });
-    // Right-click (context menu) on this specific marker
-    el.addEventListener("contextmenu", (evt) => {
-      evt.preventDefault();
-      evt.stopPropagation();
-      this._showContextMenu("waypoint", {
-        lngLat: marker.getLngLat(),
-        originalEvent: evt,
-      } as any);
-    });
+
     this._updateRouteSource();
   }
 
@@ -457,7 +430,6 @@ class RouteDrawControl implements maplibregl.IControl {
 
   clearRoute() {
     this.waypoints = [];
-    this.waypointNames = [];
     for (const m of this.markers) m.remove();
     this.markers = [];
     this._updateRouteSource();
@@ -465,216 +437,6 @@ class RouteDrawControl implements maplibregl.IControl {
 
   onRemove() {
     // cleanup listeners if needed
-  }
-
-  private _showContextMenu(
-    type: "line" | "waypoint",
-    e: maplibregl.MapMouseEvent,
-  ) {
-    if (!this.map) return;
-    // Remove any existing context menu
-    const existingMenu = document.getElementById("route-context-menu");
-    if (existingMenu) {
-      existingMenu.remove();
-    }
-
-    const menu = document.createElement("div");
-    menu.id = "route-context-menu";
-    menu.style.position = "absolute";
-    menu.style.background = "white";
-    menu.style.border = "1px solid #ccc";
-    menu.style.borderRadius = "4px";
-    menu.style.padding = "4px 0";
-    menu.style.fontFamily = "sans-serif";
-    menu.style.fontSize = "14px";
-    menu.style.boxShadow = "0 2px 6px rgba(0,0,0,0.15)";
-    menu.style.zIndex = "10000";
-
-    // Position menu at cursor
-    const rect = this.map.getContainer().getBoundingClientRect();
-    const left = e.originalEvent.clientX - rect.left;
-    const top = e.originalEvent.clientY - rect.top;
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-
-    // Helper to create menu item
-    const createMenuItem = (text: string, onClick: () => void) => {
-      const item = document.createElement("div");
-      item.textContent = text;
-      item.style.padding = "6px 12px";
-      item.style.cursor = "pointer";
-      item.addEventListener("mouseenter", () => {
-        item.style.background = "#eee";
-      });
-      item.addEventListener("mouseleave", () => {
-        item.style.background = "transparent";
-      });
-      item.addEventListener("click", () => {
-        onClick();
-        menu.remove();
-      });
-      return item;
-    };
-
-    if (type === "line") {
-      // Add "Add Waypoint" option
-      const addWaypointItem = createMenuItem("Add Waypoint", () => {
-        const coord: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-        this._addWaypointAtNearestSegment(coord);
-      });
-      menu.appendChild(addWaypointItem);
-    } else if (type === "waypoint") {
-      // Find which waypoint was clicked
-      if (!this.map) return;
-
-      // Find nearest waypoint index to click location
-      const clickCoord: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-      let nearestIndex = -1;
-      let minDist = Infinity;
-      for (let i = 0; i < this.waypoints.length; i++) {
-        const wp = this.waypoints[i];
-        const dist = Math.sqrt(
-          (wp[0] - clickCoord[0]) ** 2 + (wp[1] - clickCoord[1]) ** 2,
-        );
-        if (dist < minDist) {
-          minDist = dist;
-          nearestIndex = i;
-        }
-      }
-      if (nearestIndex === -1) return;
-
-      // "Name Waypoint"
-      const nameItem = createMenuItem("Name Waypoint", () => {
-        const currentName = this.waypointNames[nearestIndex] || "";
-        const newName = prompt("Enter waypoint name:", currentName);
-        if (newName !== null) {
-          this.waypointNames[nearestIndex] = newName;
-          const marker = this.markers[nearestIndex];
-          if (marker) {
-            marker.getElement().setAttribute("title", newName);
-          }
-        }
-      });
-      menu.appendChild(nameItem);
-
-      // "Delete Waypoint"
-      const deleteItem = createMenuItem("Delete Waypoint", () => {
-        // Remove marker from map
-        const marker = this.markers[nearestIndex];
-        if (marker) {
-          marker.remove();
-        }
-        // Remove waypoint and name
-        this.waypoints.splice(nearestIndex, 1);
-        this.waypointNames.splice(nearestIndex, 1);
-        this.markers.splice(nearestIndex, 1);
-        this._updateRouteSource();
-      });
-      menu.appendChild(deleteItem);
-    }
-
-    // Append menu to map container
-    this.map.getContainer().appendChild(menu);
-
-    // Remove menu on any click outside
-    const onClickOutside = (event: MouseEvent) => {
-      if (!menu.contains(event.target as Node)) {
-        menu.remove();
-        document.removeEventListener("click", onClickOutside);
-      }
-    };
-    document.addEventListener("click", onClickOutside);
-  }
-
-  private _addWaypointAtNearestSegment(coord: [number, number]) {
-    if (this.waypoints.length < 2) {
-      // If less than 2 waypoints, just add at end
-      this.addWaypoint(coord);
-      return;
-    }
-    let minDist = Infinity;
-    let insertIndex = 0;
-
-    for (let i = 0; i < this.waypoints.length - 1; i++) {
-      const v = this.waypoints[i];
-      const w = this.waypoints[i + 1];
-      const dist = this._pointToSegmentDistance(coord, v, w);
-      if (dist < minDist) {
-        minDist = dist;
-        insertIndex = i + 1;
-      }
-    }
-
-    // Insert waypoint and empty name at insertIndex
-    this.waypoints.splice(insertIndex, 0, coord);
-    this.waypointNames.splice(insertIndex, 0, "");
-
-    if (!this.map) return;
-    // Create marker for new waypoint
-    const map = this.map;
-    const el = document.createElement("div");
-    el.style.cssText =
-      "width:12px;height:12px;background:#0000FF;border-radius:50%;border:2px solid white;box-shadow:0 0 2px rgba(0,0,0,0.5);cursor:pointer;";
-
-    const marker = new maplibregl.Marker({
-      element: el,
-      draggable: true,
-    })
-      .setLngLat(coord)
-      .addTo(map);
-
-    // Add to markers array at insertIndex
-    this.markers.splice(insertIndex, 0, marker);
-
-    // 🖱️ Hover feedback
-    el.addEventListener("mouseenter", () => {
-      map.getCanvas().style.cursor = "move";
-    });
-    el.addEventListener("mouseleave", () => {
-      map.getCanvas().style.cursor = "";
-    });
-
-    // 🧭 Drag behaviour (live update)
-    marker.on("drag", () => {
-      const newPos = marker.getLngLat();
-      const index = this.markers.indexOf(marker);
-      if (index !== -1) {
-        this.waypoints[index] = [newPos.lng, newPos.lat];
-        this._updateRouteSource(); // live line redraw while dragging
-      }
-    });
-
-    marker.on("dragend", () => {
-      const newPos = marker.getLngLat();
-      const index = this.markers.indexOf(marker);
-      if (index !== -1) {
-        this.waypoints[index] = [newPos.lng, newPos.lat];
-        this._updateRouteSource();
-      }
-    });
-
-    this._updateRouteSource();
-  }
-
-  private _pointToSegmentDistance(
-    p: [number, number],
-    v: [number, number],
-    w: [number, number],
-  ): number {
-    // Calculate perpendicular distance from point p to segment vw
-    const [px, py] = p;
-    const [vx, vy] = v;
-    const [wx, wy] = w;
-
-    const l2 = (wx - vx) * (wx - vx) + (wy - vy) * (wy - vy);
-    if (l2 === 0)
-      return Math.sqrt((px - vx) * (px - vx) + (py - vy) * (py - vy));
-
-    let t = ((px - vx) * (wx - vx) + (py - vy) * (wy - vy)) / l2;
-    t = Math.max(0, Math.min(1, t));
-    const projx = vx + t * (wx - vx);
-    const projy = vy + t * (wy - vy);
-    return Math.sqrt((px - projx) * (px - projx) + (py - projy) * (py - projy));
   }
 }
 
