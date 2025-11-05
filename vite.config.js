@@ -3,6 +3,7 @@ import { defineConfig } from "vite";
 import copy from "rollup-plugin-copy";
 
 export default defineConfig({
+  base: "",
   esbuild: {
     target: "esnext",
   },
@@ -13,7 +14,10 @@ export default defineConfig({
   },
   plugins: [
     copy({
-      targets: [{ src: "src/routes/*", dest: "dist/routes" }],
+      targets: [
+        { src: "src/routes/*", dest: "dist/routes" },
+        { src: "src/tiles/*", dest: "dist/charts" },
+      ],
       hook: "writeBundle",
     }),
   ],
