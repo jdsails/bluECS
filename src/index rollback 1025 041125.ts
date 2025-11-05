@@ -1,7 +1,3 @@
-/* Revised index.ts — fixes MaplibreInspect timing, route-manager sync, robust predefined route loading,
-   keeps UI and styling intact (route panel, context menus, GPX export, measure, cursor).
-*/
-
 import * as maplibregl from "maplibre-gl";
 import "@maplibre/maplibre-gl-inspect/dist/maplibre-gl-inspect.css";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -16,17 +12,18 @@ import MaplibreInspect from "@maplibre/maplibre-gl-inspect";
 import { Protocol, PMTiles } from "pmtiles";
 import createStyle from "@enc-tiles/styles";
 
-/* --- PMTiles / style / map setup --- */
 const tileset = import.meta.env.VITE_TILESET;
 const tilesUrl =
   import.meta.env.VITE_TILES_URL ?? window.location.origin + "/tiles/";
 
+// add the PMTiles plugin to the maplibre-gl global.
 const protocol = new Protocol({ metadata: true });
 addProtocol("pmtiles", protocol.tile);
 const url = new URL(tileset, tilesUrl).toString();
 const pmtiles = new PMTiles(url);
 protocol.add(pmtiles);
 
+// Fetch the header so we can get the center lon, lat of the map.
 const header = await pmtiles.getHeader();
 
 const style = createStyle({
@@ -39,20 +36,19 @@ const style = createStyle({
 
 const map = new Map({
   container: "map",
-  hash: true,
+  hash: true, // Enable hash routing
   zoom: header.maxZoom,
   center: [header.centerLon, header.centerLat],
   style,
 });
 
-/* Place navigation & fullscreen top-left */
 map.addControl(
   new NavigationControl({ showZoom: true, showCompass: true }),
   "top-left",
 );
 map.addControl(new FullscreenControl(), "top-left");
-
-/* --- Bounds --- */
+map.addControl(new MaplibreInspect({ popup: new Popup({}) }), "top-left");
+// ---------- BOUNDS & CENTER (use these numbers above map creation or in it) ----------
 const BBOX_W = -6.416667;
 const BBOX_S = 45.615;
 const BBOX_E = -5.583333;
@@ -63,37 +59,45 @@ const BOUNDS = [BBOX_W, BBOX_S, BBOX_E, BBOX_N] as [
   number,
   number,
 ];
+
+// If you haven't already set center and maxBounds in map creation, change the Map constructor to include:
+// center: [-6.0, 46.0575], maxBounds: BOUNDS
+// (Your current code sets center to header center; replace with the following map init if you want the forced center)
+
 map.setCenter([-6.0, 46.0575]);
 map.setMaxBounds(BOUNDS);
 
-/* --- Helpers --- */
+// --------------------- Helper functions ---------------------
+
+/** Haversine distance between two [lon,lat] points in nautical miles */
 function haversineNm(a: [number, number], b: [number, number]) {
   const toRad = (d: number) => (d * Math.PI) / 180;
-  const R = 3440.065; // nautical miles
+  const R = 3440.065; // radius of Earth in nautical miles
   const dLat = toRad(b[1] - a[1]);
   const dLon = toRad(b[0] - a[0]);
   const lat1 = toRad(a[1]);
   const lat2 = toRad(b[1]);
+  const sinDlat = Math.sin(dLat / 2);
+  const sinDlon = Math.sin(dLon / 2);
   const aa =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    sinDlat * sinDlat + Math.cos(lat1) * Math.cos(lat2) * sinDlon * sinDlon;
   const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
   return R * c;
 }
 
+/** Format decimal degrees to "DD°MM'.MMN/S" and "DDD°MM'.MME/W" */
 function formatLatLonForDisplay(lat: number, lon: number) {
   const fmt = (deg: number, isLat = true) => {
     const hemi = isLat ? (deg >= 0 ? "N" : "S") : deg >= 0 ? "E" : "W";
     const absDeg = Math.abs(deg);
     const d = Math.floor(absDeg);
     const m = (absDeg - d) * 60;
-    return `${d.toString().padStart(isLat ? 2 : 3, "0")}°${m
-      .toFixed(2)
-      .padStart(5, "0")}'${hemi}`;
+    return `${d.toString().padStart(isLat ? 2 : 3, "0")}°${m.toFixed(2).padStart(5, "0")}'${hemi}`;
   };
   return `${fmt(lat, true)} ${fmt(lon, false)}`;
 }
 
+/** create & download a file (used for GPX export) */
 function downloadFile(
   filename: string,
   content: string,
@@ -110,14 +114,15 @@ function downloadFile(
   URL.revokeObjectURL(url);
 }
 
-/* --- Cursor control --- */
+// --------------------- Cursor Coord Control ---------------------
 class CursorCoordControl implements maplibregl.IControl {
-  private container!: HTMLElement;
+  private container: HTMLElement;
   onAdd(map: maplibregl.Map) {
     this.container = document.createElement("div");
     this.container.className = "maplibregl-ctrl cursor-coord-control";
     this.container.style.cssText =
       "background: rgba(255,255,255,0.9); padding:6px; font-family:monospace; font-size:12px; border-radius:4px;";
+    this.container.textContent = ""; // will be replaced on mousemove
     map.on("mousemove", (e) => {
       this.container.textContent = formatLatLonForDisplay(
         e.lngLat.lat,
@@ -127,11 +132,11 @@ class CursorCoordControl implements maplibregl.IControl {
     return this.container;
   }
   onRemove() {
-    this.container.remove();
+    this.container.parentNode?.removeChild(this.container);
   }
 }
 
-/* --- Measure control --- */
+// --------------------- Measure Control ---------------------
 class MeasureControl implements maplibregl.IControl {
   private container!: HTMLElement;
   private active = false;
@@ -164,6 +169,12 @@ class MeasureControl implements maplibregl.IControl {
       this._updatePopup();
     });
 
+    map.on("mousemove", (e) => {
+      if (!this.active || this.pts.length === 0) return;
+      // optional: show temporary line to cursor (not implemented here)
+    });
+
+    // create source + layer for measure line/points
     if (!map.getSource("measure")) {
       map.addSource("measure", {
         type: "geojson",
@@ -182,15 +193,22 @@ class MeasureControl implements maplibregl.IControl {
         paint: { "circle-radius": 5, "circle-color": "#FF0000" },
       });
     }
+
     return this.container;
   }
 
-  onRemove() {}
+  onRemove() {
+    if (!this.map) return;
+    this.map.off("click");
+  }
 
   toggle() {
     this.active = !this.active;
     (this.container.querySelector("button") as HTMLElement).style.fontWeight =
       this.active ? "700" : "400";
+    if (!this.active) {
+      // optionally finalize
+    }
   }
 
   clear() {
@@ -199,77 +217,80 @@ class MeasureControl implements maplibregl.IControl {
     this._updatePopup(true);
   }
 
-  private _updateLayer() {
+  _updateLayer() {
     if (!this.map) return;
     const features: any[] = [];
-    for (const p of this.pts)
+    for (const p of this.pts) {
       features.push({
         type: "Feature",
         geometry: { type: "Point", coordinates: p },
         properties: {},
       });
-    if (this.pts.length >= 2)
+    }
+    if (this.pts.length >= 2) {
       features.push({
         type: "Feature",
         geometry: { type: "LineString", coordinates: this.pts },
         properties: {},
       });
-    const src = this.map.getSource("measure") as
-      | maplibregl.GeoJSONSource
-      | undefined;
-    if (src) src.setData({ type: "FeatureCollection", features });
+    }
+    const src = this.map.getSource("measure") as maplibregl.GeoJSONSourceRaw;
+    src.setData({ type: "FeatureCollection", features });
   }
 
-  private _updatePopup(clear = false) {
+  _updatePopup(clear = false) {
+    // small ephemeral popup in corner of map showing current length in NM
     let existing = document.getElementById("measure-popup");
     if (clear && existing) existing.remove();
     if (clear) return;
-    const total = this.pts.reduce(
-      (acc, _p, i, arr) =>
-        i === 0 ? 0 : acc + haversineNm(arr[i - 1], arr[i]),
-      0,
-    );
+    const total = this.pts.reduce((acc, _p, i, arr) => {
+      if (i === 0) return 0;
+      return acc + haversineNm(arr[i - 1], arr[i]);
+    }, 0);
     if (!existing) {
       existing = document.createElement("div");
       existing.id = "measure-popup";
       existing.style.cssText =
-        "position:absolute; left:202px; bottom:10px; background:rgba(255,255,255,0.95); padding:6px; border-radius:4px; font:12px/20px monospace;";
+        "position:absolute; right:10px; bottom:10px; background:rgba(255,255,255,0.95); padding:6px; border-radius:4px; font-family:monospace;";
       document.body.appendChild(existing);
     }
     existing.textContent = `Measure: ${total.toFixed(2)} NM (${this.pts.length} points)`;
   }
 }
 
-/* --- Route draw & manager control --- */
+// --------------------- Route draw & GPX export control ---------------------
 class RouteDrawControl implements maplibregl.IControl {
   private container!: HTMLElement;
   private map?: maplibregl.Map;
   private drawing = false;
-
-  // editor
+  // For legacy single route editing (active route)
   private waypoints: [number, number][] = [];
   private waypointNames: string[] = [];
   private markers: maplibregl.Marker[] = [];
   private routePanel!: HTMLElement;
   private routeName: string = "Route 1";
-  private collapsed = false;
-
-  // saved routes
+  private collapsed: boolean = false;
+  // Route management system
   private savedRoutes: {
     name: string;
     waypoints: [number, number][];
     waypointNames: string[];
     visible: boolean;
     active: boolean;
-    sourceId?: string;
     lineLayerId?: string;
     pointLayerId?: string;
+    sourceId?: string;
   }[] = [];
-  private activeRouteIndex = -1;
+  private activeRouteIndex: number = -1;
 
   onAdd(map: maplibregl.Map) {
     this.map = map;
     this.container = document.createElement("div");
+    this.container.className = "maplibregl-ctrl route-draw-control";
+    this.container.style.cssText =
+      "background: rgba(255,255,255,0.9); padding:6px; border-radius:4px;";
+
+    // --- Route info sidebar panel ---
     this._injectPanelCSS();
     this.routePanel = document.getElementById("route-panel") as HTMLElement;
     if (!this.routePanel) {
@@ -300,8 +321,7 @@ class RouteDrawControl implements maplibregl.IControl {
       `;
       document.body.appendChild(this.routePanel);
     }
-
-    // toggle
+    // Panel collapse/expand
     const toggleBtn = this.routePanel.querySelector(
       "#route-panel-toggle",
     ) as HTMLButtonElement;
@@ -317,8 +337,7 @@ class RouteDrawControl implements maplibregl.IControl {
         toggleBtn.title = "Collapse";
       }
     };
-
-    // name input
+    // Route name editing
     const nameInput = this.routePanel.querySelector(
       "#route-name-input",
     ) as HTMLInputElement;
@@ -326,8 +345,7 @@ class RouteDrawControl implements maplibregl.IControl {
       this.routeName = nameInput.value;
       this._updateRoutePanel();
     });
-
-    // toolbar
+    // --- Toolbar button bindings ---
     const startBtn = this.routePanel.querySelector(
       "#route-toolbar-start",
     ) as HTMLButtonElement;
@@ -337,20 +355,22 @@ class RouteDrawControl implements maplibregl.IControl {
     const exportBtn = this.routePanel.querySelector(
       "#route-toolbar-export",
     ) as HTMLButtonElement;
-
     startBtn.onclick = () => {
+      // Start new route: reset current editing state, create new empty route, and set as active
       this.drawing = true;
       startBtn.disabled = true;
       stopBtn.disabled = false;
-
-      // clear editor state
-      for (const m of this.markers) m.remove();
-      this.markers = [];
+      // Finalize current editing route if it has waypoints
+      if (this.waypoints.length > 0) {
+        this._finalizeCurrentRoute();
+      }
+      // Clear editing state
       this.waypoints = [];
       this.waypointNames = [];
-
-      // create new empty saved route and set active
+      for (const m of this.markers) m.remove();
+      this.markers = [];
       this.routeName = `Route ${this.savedRoutes.length + 1}`;
+      // Add new empty route to savedRoutes and set as active
       this.savedRoutes.push({
         name: this.routeName,
         waypoints: [],
@@ -359,45 +379,44 @@ class RouteDrawControl implements maplibregl.IControl {
         active: true,
       });
       this.activeRouteIndex = this.savedRoutes.length - 1;
+      // Set all other routes inactive
       this.savedRoutes.forEach(
         (r, i) => (r.active = i === this.activeRouteIndex),
       );
-      // no route layers created yet — _updateRouteSource updates editor only
       this._syncActiveRouteToEditor();
       this._renderSavedRoutes();
       this._updateRoutePanel();
       this._updateRouteSource();
-      this.updateActiveRouteData(this.waypoints);
     };
-
     stopBtn.onclick = () => {
       this.drawing = false;
       startBtn.disabled = false;
       stopBtn.disabled = true;
+      // Finalize current editing route (save to savedRoutes)
       this._finalizeCurrentRoute();
       this._renderSavedRoutes();
       this._updateRoutePanel();
     };
-
     exportBtn.onclick = () => {
+      // Export only the active route
       if (
         this.activeRouteIndex >= 0 &&
         this.activeRouteIndex < this.savedRoutes.length
       ) {
         this._exportSavedRoute(this.activeRouteIndex);
       } else {
-        // fallback to editor export
-        this.exportGpx();
+        alert("No active route to export.");
       }
     };
 
+    // --- Map click for drawing ---
     map.on("click", (e) => {
       if (!this.drawing) return;
       const p: [number, number] = [e.lngLat.lng, e.lngLat.lat];
       this.addWaypoint(p);
     });
 
-    // create editor source/layers if needed
+    // --- Source & layers ---
     if (!map.getSource("route")) {
       map.addSource("route", {
         type: "geojson",
@@ -422,93 +441,30 @@ class RouteDrawControl implements maplibregl.IControl {
       });
     }
 
-    // context menu on editor line (marker elements also get contextmenu)
+    // --- Context menu events ---
     map.on("contextmenu", "route-line", (e) => {
       e.preventDefault();
       this._showContextMenu("line", e);
     });
-
     map.on("contextmenu", "route-waypoints", (e) => {
       e.preventDefault();
       this._showContextMenu("waypoint", e);
     });
 
-    // load saved routes (predefined)
     this._updateRoutePanel();
+    // Load predefined routes from /routes/
     this._loadPredefinedRoutes();
-
     return this.container;
-  }
-
-  // central marker creation used by both sync and editor insertion
-  private _createMarkerAt(
-    idx: number,
-    coord: [number, number],
-    name = "",
-    insert = false,
-  ) {
-    if (!this.map) return;
-    const el = document.createElement("div");
-    el.style.cssText =
-      "width:15px;height:15px;background:#0077b6;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.18);cursor:pointer;transition:box-shadow .12s;";
-    if (name) el.setAttribute("title", name);
-    const marker = new maplibregl.Marker({ element: el, draggable: true })
-      .setLngLat(coord)
-      .addTo(this.map);
-
-    el.addEventListener("mouseenter", () => {
-      el.style.boxShadow = "0 0 8px rgba(0,68,119,0.6)";
-      this.map!.getCanvas().style.cursor = "move";
-    });
-    el.addEventListener("mouseleave", () => {
-      el.style.boxShadow = "0 1px 4px rgba(0,0,0,0.18)";
-      this.map!.getCanvas().style.cursor = "";
-    });
-
-    marker.on("drag", () => {
-      const newPos = marker.getLngLat();
-      const index = this.markers.indexOf(marker);
-      if (index !== -1) {
-        this.waypoints[index] = [newPos.lng, newPos.lat];
-        if (
-          this.activeRouteIndex >= 0 &&
-          this.activeRouteIndex < this.savedRoutes.length
-        ) {
-          this.savedRoutes[this.activeRouteIndex].waypoints[index] = [
-            newPos.lng,
-            newPos.lat,
-          ];
-        }
-        // update editor source and panel live
-        this._updateRouteSource();
-        this.updateActiveRouteData(this.waypoints);
-        this._updateRoutePanel();
-      }
-    });
-
-    // right click / long press handled via DOM contextmenu
-    el.addEventListener("contextmenu", (evt) => {
-      evt.preventDefault();
-      evt.stopPropagation();
-      const synthetic = {
-        lngLat: marker.getLngLat(),
-        originalEvent: evt,
-      } as unknown as maplibregl.MapMouseEvent;
-      this._showContextMenu("waypoint", synthetic);
-    });
-
-    if (insert) this.markers.splice(idx, 0, marker);
-    else this.markers[idx] = marker;
   }
 
   addWaypoint(coord: [number, number]) {
     if (!this.map) return;
-    // ensure an active route exists
+    // Always operate on the active route
     if (
       this.activeRouteIndex < 0 ||
       this.activeRouteIndex >= this.savedRoutes.length
     ) {
-      // create new saved route and become active
+      // If no active route, create one
       this.routeName = `Route ${this.savedRoutes.length + 1}`;
       this.savedRoutes.push({
         name: this.routeName,
@@ -521,72 +477,80 @@ class RouteDrawControl implements maplibregl.IControl {
       this.savedRoutes.forEach(
         (r, i) => (r.active = i === this.activeRouteIndex),
       );
+      this._syncActiveRouteToEditor();
+      this._renderSavedRoutes();
     }
+    // Add to editor state
+    const map = this.map;
+    const el = document.createElement("div");
+    el.style.cssText =
+      "width:15px;height:15px;background:#0077b6;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.18);cursor:pointer;transition:box-shadow .15s;";
 
-    // push and make marker
+    const marker = new maplibregl.Marker({
+      element: el,
+      draggable: true,
+    })
+      .setLngLat(coord)
+      .addTo(map);
+
     this.waypoints.push(coord);
     this.waypointNames.push("");
-    const idx = this.waypoints.length - 1;
-    this._createMarkerAt(idx, coord, "", false);
+    this.markers.push(marker);
 
-    // reflect into saved route being edited
-    if (
-      this.activeRouteIndex >= 0 &&
-      this.activeRouteIndex < this.savedRoutes.length
-    ) {
-      const r = this.savedRoutes[this.activeRouteIndex];
-      r.waypoints = this.waypoints.map((p) => [...p]);
-      r.waypointNames = [...this.waypointNames];
+    if (this.waypointNames[this.waypoints.length - 1]) {
+      marker
+        .getElement()
+        .setAttribute("title", this.waypointNames[this.waypoints.length - 1]);
     }
-
-    this._updateRouteSource();
-    this.updateActiveRouteData(this.waypoints);
-    this._updateRoutePanel();
-  }
-
-  private _addWaypointAtNearestSegment(coord: [number, number]) {
-    if (!this.map) return;
-    if (this.waypoints.length < 2) {
-      this.addWaypoint(coord);
-      return;
-    }
-    let minDist = Infinity;
-    let insertIndex = 0;
-    for (let i = 0; i < this.waypoints.length - 1; i++) {
-      const dist = this._pointToSegmentDistance(
-        coord,
-        this.waypoints[i],
-        this.waypoints[i + 1],
-      );
-      if (dist < minDist) {
-        minDist = dist;
-        insertIndex = i + 1;
+    el.addEventListener("mouseenter", () => {
+      el.style.boxShadow = "0 0 8px #003366";
+      map.getCanvas().style.cursor = "move";
+    });
+    el.addEventListener("mouseleave", () => {
+      el.style.boxShadow = "0 1px 4px rgba(0,0,0,0.18)";
+      map.getCanvas().style.cursor = "";
+    });
+    marker.on("drag", () => {
+      const newPos = marker.getLngLat();
+      const index = this.markers.indexOf(marker);
+      if (index !== -1) {
+        this.waypoints[index] = [newPos.lng, newPos.lat];
+        this._updateRouteSource();
+        this._updateRoutePanel();
       }
-    }
-    this.waypoints.splice(insertIndex, 0, coord);
-    this.waypointNames.splice(insertIndex, 0, "");
-    this._createMarkerAt(insertIndex, coord, "", true);
-
-    if (
-      this.activeRouteIndex >= 0 &&
-      this.activeRouteIndex < this.savedRoutes.length
-    ) {
-      this.savedRoutes[this.activeRouteIndex].waypoints = this.waypoints.map(
-        (p) => [...p],
-      );
-      this.savedRoutes[this.activeRouteIndex].waypointNames = [
-        ...this.waypointNames,
-      ];
-    }
-
+    });
+    marker.on("dragend", () => {
+      const newPos = marker.getLngLat();
+      const index = this.markers.indexOf(marker);
+      if (index !== -1) {
+        this.waypoints[index] = [newPos.lng, newPos.lat];
+        this._updateRouteSource();
+        this._updateRoutePanel();
+      }
+    });
+    el.addEventListener("contextmenu", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this._showContextMenu("waypoint", {
+        lngLat: marker.getLngLat(),
+        originalEvent: evt,
+      } as any);
+    });
     this._updateRouteSource();
-    this.updateActiveRouteData(this.waypoints);
     this._updateRoutePanel();
   }
 
   private _updateRouteSource() {
     if (!this.map) return;
+    // Only update the editor "route" source for the active route
     const features: any[] = [];
+    for (const [i, p] of this.waypoints.entries()) {
+      features.push({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: p },
+        properties: { name: this.waypointNames[i] || "" },
+      });
+    }
     if (this.waypoints.length >= 2) {
       features.push({
         type: "Feature",
@@ -594,44 +558,26 @@ class RouteDrawControl implements maplibregl.IControl {
         properties: {},
       });
     }
-    for (let i = 0; i < this.waypoints.length; ++i) {
-      features.push({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: this.waypoints[i] },
-        properties: { name: this.waypointNames[i] || "" },
-      });
-    }
-    const src = this.map.getSource("route") as
-      | maplibregl.GeoJSONSource
-      | undefined;
-    if (src) src.setData({ type: "FeatureCollection", features });
-    // update titles on markers
+    const src = this.map.getSource("route") as maplibregl.GeoJSONSource;
+    src.setData({ type: "FeatureCollection", features });
+    // Update marker titles to match names
     for (let i = 0; i < this.markers.length; ++i) {
-      const el = this.markers[i]?.getElement();
-      if (el) el.setAttribute("title", this.waypointNames[i] || "");
+      this.markers[i]
+        ?.getElement()
+        .setAttribute("title", this.waypointNames[i] || "");
     }
   }
-  updateActiveRouteData(updatedCoords: [number, number][]) {
-    if (!this.activeRouteId) return;
-    const route = this.routes.find((r) => r.id === this.activeRouteId);
-    if (route) {
-      route.waypoints = updatedCoords;
-    }
-    // Refresh both active and inactive routes
-    if (typeof this._updateRouteSources === "function") {
-      this._updateRouteSources();
-    } else if (typeof this._updateRouteSource === "function") {
-      this._updateRouteSource();
-      this.updateActiveRouteData(this.waypoints);
-    }
-  }
+
   private _updateRoutePanel() {
     if (!this.routePanel) return;
+    // Set name input value if not focused
     const nameInput = this.routePanel.querySelector(
       "#route-name-input",
     ) as HTMLInputElement;
-    if (document.activeElement !== nameInput) nameInput.value = this.routeName;
-
+    if (document.activeElement !== nameInput) {
+      nameInput.value = this.routeName;
+    }
+    // Waypoint table
     const listDiv = this.routePanel.querySelector(
       "#route-waypoint-list",
     ) as HTMLElement;
@@ -639,7 +585,9 @@ class RouteDrawControl implements maplibregl.IControl {
     if (this.waypoints.length === 0) {
       listDiv.innerHTML = `<div style="color:#888;font-style:italic;">No waypoints</div>`;
     } else {
-      let html = `<table class="route-wp-table"><thead><tr><th>#</th><th>Name</th><th>Lat/Lon</th><th>Bearing</th><th>Dist</th><th></th></tr></thead><tbody>`;
+      let html = `<table class="route-wp-table"><thead>
+        <tr><th>#</th><th>Name</th><th>Lat/Lon</th><th>Bearing</th><th>Dist</th><th></th></tr>
+      </thead><tbody>`;
       let total = 0;
       for (let i = 0; i < this.waypoints.length; ++i) {
         const [lon, lat] = this.waypoints[i];
@@ -657,7 +605,9 @@ class RouteDrawControl implements maplibregl.IControl {
         }
         html += `<tr>
           <td>${i + 1}</td>
-          <td><input class="wp-name-input" type="text" value="${name}" data-idx="${i}" style="width:80px;"></td>
+          <td>
+            <input class="wp-name-input" type="text" value="${name}" data-idx="${i}" style="width:80px;">
+          </td>
           <td style="font-family:monospace;font-size:12px;">${formatLatLonForDisplay(lat, lon)}</td>
           <td style="text-align:center;">${bearing}</td>
           <td style="text-align:right;">${dist ? dist + " NM" : ""}</td>
@@ -666,22 +616,15 @@ class RouteDrawControl implements maplibregl.IControl {
       }
       html += "</tbody></table>";
       listDiv.innerHTML = html;
-
+      // Add input event for names
       listDiv.querySelectorAll(".wp-name-input").forEach((input) => {
         input.addEventListener("input", (e) => {
           const idx = parseInt((e.target as HTMLInputElement).dataset.idx!);
           this.waypointNames[idx] = (e.target as HTMLInputElement).value;
-          if (
-            this.activeRouteIndex >= 0 &&
-            this.activeRouteIndex < this.savedRoutes.length
-          ) {
-            this.savedRoutes[this.activeRouteIndex].waypointNames[idx] =
-              this.waypointNames[idx];
-          }
           this._updateRouteSource();
-          this.updateActiveRouteData(this.waypoints);
         });
       });
+      // Add delete buttons
       listDiv.querySelectorAll(".wp-delete-btn").forEach((btn) => {
         btn.addEventListener("click", (e) => {
           const idx = parseInt((e.target as HTMLElement).dataset.idx!);
@@ -689,19 +632,21 @@ class RouteDrawControl implements maplibregl.IControl {
         });
       });
     }
-
+    // Total distance
     const totDiv = this.routePanel.querySelector(
       "#route-total-length",
     ) as HTMLElement;
     let tot = 0;
-    for (let i = 1; i < this.waypoints.length; ++i)
+    for (let i = 1; i < this.waypoints.length; ++i) {
       tot += haversineNm(this.waypoints[i - 1], this.waypoints[i]);
+    }
     totDiv.textContent = `Total: ${tot.toFixed(2)} NM`;
-
+    // Render saved routes list
     this._renderSavedRoutes();
   }
 
   private _calculateBearing(a: [number, number], b: [number, number]): string {
+    // Returns bearing in degrees (true) as a string "123°"
     const toRad = (d: number) => (d * Math.PI) / 180;
     const toDeg = (r: number) => (r * 180) / Math.PI;
     const lat1 = toRad(a[1]);
@@ -719,57 +664,28 @@ class RouteDrawControl implements maplibregl.IControl {
 
   private _deleteWaypoint(idx: number) {
     if (idx < 0 || idx >= this.waypoints.length) return;
+    // Remove marker
     this.markers[idx]?.remove();
-    this.markers.splice(idx, 1);
     this.waypoints.splice(idx, 1);
     this.waypointNames.splice(idx, 1);
-    if (
-      this.activeRouteIndex >= 0 &&
-      this.activeRouteIndex < this.savedRoutes.length
-    ) {
-      const r = this.savedRoutes[this.activeRouteIndex];
-      r.waypoints = this.waypoints.map((p) => [...p]);
-      r.waypointNames = [...this.waypointNames];
-    }
+    this.markers.splice(idx, 1);
     this._updateRouteSource();
-    this.updateActiveRouteData(this.waypoints);
     this._updateRoutePanel();
   }
 
   exportGpx() {
+    // Deprecated: now handled by _exportSavedRoute
     if (
       this.activeRouteIndex >= 0 &&
       this.activeRouteIndex < this.savedRoutes.length
     ) {
       this._exportSavedRoute(this.activeRouteIndex);
-      return;
+    } else {
+      alert("No active route to export.");
     }
-    if (this.waypoints.length === 0) {
-      alert("No waypoints to export.");
-      return;
-    }
-    const now = new Date().toISOString();
-    let gpx = `<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
-<gpx version="1.1" creator="bluECS" xmlns="http://www.topografix.com/GPX/1/1">
-  <metadata><time>${now}</time></metadata>
-  <trk>
-    <name>${this._escapeXml(this.routeName)}</name>
-    <trkseg>
-`;
-    for (const p of this.waypoints) {
-      const [lon, lat] = p;
-      gpx += `      <trkpt lat="${lat.toFixed(6)}" lon="${lon.toFixed(6)}"></trkpt>\n`;
-    }
-    gpx += `    </trkseg>
-  </trk>
-</gpx>`;
-    downloadFile(
-      `${(this.routeName || "route").replace(/[^a-zA-Z0-9]/g, "_")}.gpx`,
-      gpx,
-    );
   }
 
-  private _escapeXml(s: string) {
+  private _escapeXml(s: string): string {
     return s.replace(
       /[<>&'"]/g,
       (c) =>
@@ -783,11 +699,19 @@ class RouteDrawControl implements maplibregl.IControl {
     );
   }
 
+  // clearRoute() removed: no longer in toolbar
+
   onRemove() {
-    if (this.routePanel) this.routePanel.remove();
-    if (!this.map) return;
-    for (let i = 0; i < this.savedRoutes.length; ++i)
-      this._removeRouteLayers(i);
+    // cleanup listeners if needed
+    if (this.routePanel) {
+      this.routePanel.remove();
+    }
+    // Remove all saved route layers
+    if (this.map) {
+      for (let i = 0; i < this.savedRoutes.length; ++i) {
+        this._removeRouteLayers(i);
+      }
+    }
   }
 
   private _showContextMenu(
@@ -795,8 +719,12 @@ class RouteDrawControl implements maplibregl.IControl {
     e: maplibregl.MapMouseEvent,
   ) {
     if (!this.map) return;
-    const existing = document.getElementById("route-context-menu");
-    if (existing) existing.remove();
+    // Remove any existing context menu
+    const existingMenu = document.getElementById("route-context-menu");
+    if (existingMenu) {
+      existingMenu.remove();
+    }
+
     const menu = document.createElement("div");
     menu.id = "route-context-menu";
     menu.style.position = "absolute";
@@ -809,26 +737,26 @@ class RouteDrawControl implements maplibregl.IControl {
     menu.style.boxShadow = "0 2px 8px rgba(0,0,0,0.14)";
     menu.style.zIndex = "10000";
 
+    // Position menu at cursor
     const rect = this.map.getContainer().getBoundingClientRect();
-    const left = (e.originalEvent as MouseEvent).clientX - rect.left;
-    const top = (e.originalEvent as MouseEvent).clientY - rect.top;
+    const left = e.originalEvent.clientX - rect.left;
+    const top = e.originalEvent.clientY - rect.top;
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
 
+    // Helper to create menu item
     const createMenuItem = (text: string, onClick: () => void) => {
       const item = document.createElement("div");
       item.textContent = text;
       item.style.padding = "7px 18px";
       item.style.cursor = "pointer";
       item.style.userSelect = "none";
-      item.addEventListener(
-        "mouseenter",
-        () => (item.style.background = "#e0efff"),
-      );
-      item.addEventListener(
-        "mouseleave",
-        () => (item.style.background = "transparent"),
-      );
+      item.addEventListener("mouseenter", () => {
+        item.style.background = "#e0efff";
+      });
+      item.addEventListener("mouseleave", () => {
+        item.style.background = "transparent";
+      });
       item.addEventListener("click", () => {
         onClick();
         menu.remove();
@@ -837,57 +765,58 @@ class RouteDrawControl implements maplibregl.IControl {
     };
 
     if (type === "line") {
-      menu.appendChild(
-        createMenuItem("Add Waypoint", () => {
-          const coord: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-          this._addWaypointAtNearestSegment(coord);
-        }),
-      );
-    } else {
+      // Add "Add Waypoint" option
+      const addWaypointItem = createMenuItem("Add Waypoint", () => {
+        const coord: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+        this._addWaypointAtNearestSegment(coord);
+      });
+      menu.appendChild(addWaypointItem);
+    } else if (type === "waypoint") {
+      // Find nearest waypoint index to click location
       const clickCoord: [number, number] = [e.lngLat.lng, e.lngLat.lat];
       let nearestIndex = -1;
       let minDist = Infinity;
       for (let i = 0; i < this.waypoints.length; i++) {
         const wp = this.waypoints[i];
-        const dist = Math.hypot(wp[0] - clickCoord[0], wp[1] - clickCoord[1]);
+        const dist = Math.sqrt(
+          (wp[0] - clickCoord[0]) ** 2 + (wp[1] - clickCoord[1]) ** 2,
+        );
         if (dist < minDist) {
           minDist = dist;
           nearestIndex = i;
         }
       }
       if (nearestIndex === -1) return;
-      menu.appendChild(
-        createMenuItem("Name Waypoint", () => {
-          const currentName = this.waypointNames[nearestIndex] || "";
-          const newName = prompt("Enter waypoint name:", currentName);
-          if (newName !== null) {
-            this.waypointNames[nearestIndex] = newName;
-            const marker = this.markers[nearestIndex];
-            if (marker) marker.getElement().setAttribute("title", newName);
-            if (
-              this.activeRouteIndex >= 0 &&
-              this.activeRouteIndex < this.savedRoutes.length
-            ) {
-              this.savedRoutes[this.activeRouteIndex].waypointNames[
-                nearestIndex
-              ] = newName;
-            }
-            this._updateRouteSource();
-            this.updateActiveRouteData(this.waypoints);
-            this._updateRoutePanel();
+
+      // "Name Waypoint"
+      const nameItem = createMenuItem("Name Waypoint", () => {
+        const currentName = this.waypointNames[nearestIndex] || "";
+        const newName = prompt("Enter waypoint name:", currentName);
+        if (newName !== null) {
+          this.waypointNames[nearestIndex] = newName;
+          const marker = this.markers[nearestIndex];
+          if (marker) {
+            marker.getElement().setAttribute("title", newName);
           }
-        }),
-      );
-      menu.appendChild(
-        createMenuItem("Delete Waypoint", () => {
-          this._deleteWaypoint(nearestIndex);
-        }),
-      );
+          this._updateRouteSource();
+          this._updateRoutePanel();
+        }
+      });
+      menu.appendChild(nameItem);
+
+      // "Delete Waypoint"
+      const deleteItem = createMenuItem("Delete Waypoint", () => {
+        this._deleteWaypoint(nearestIndex);
+      });
+      menu.appendChild(deleteItem);
     }
 
+    // Append menu to map container
     this.map.getContainer().appendChild(menu);
-    const onClickOutside = (ev: MouseEvent) => {
-      if (!menu.contains(ev.target as Node)) {
+
+    // Remove menu on any click outside
+    const onClickOutside = (event: MouseEvent) => {
+      if (!menu.contains(event.target as Node)) {
         menu.remove();
         document.removeEventListener("click", onClickOutside);
       }
@@ -895,111 +824,314 @@ class RouteDrawControl implements maplibregl.IControl {
     document.addEventListener("click", onClickOutside);
   }
 
+  private _addWaypointAtNearestSegment(coord: [number, number]) {
+    if (this.waypoints.length < 2) {
+      // If less than 2 waypoints, just add at end
+      this.addWaypoint(coord);
+      return;
+    }
+    let minDist = Infinity;
+    let insertIndex = 0;
+    for (let i = 0; i < this.waypoints.length - 1; i++) {
+      const v = this.waypoints[i];
+      const w = this.waypoints[i + 1];
+      const dist = this._pointToSegmentDistance(coord, v, w);
+      if (dist < minDist) {
+        minDist = dist;
+        insertIndex = i + 1;
+      }
+    }
+    // Insert waypoint and empty name at insertIndex
+    this.waypoints.splice(insertIndex, 0, coord);
+    this.waypointNames.splice(insertIndex, 0, "");
+    if (!this.map) return;
+    // Create marker for new waypoint
+    const map = this.map;
+    const el = document.createElement("div");
+    el.style.cssText =
+      "width:15px;height:15px;background:#0077b6;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.18);cursor:pointer;";
+    const marker = new maplibregl.Marker({
+      element: el,
+      draggable: true,
+    })
+      .setLngLat(coord)
+      .addTo(map);
+    // Add to markers array at insertIndex
+    this.markers.splice(insertIndex, 0, marker);
+    // Hover feedback
+    el.addEventListener("mouseenter", () => {
+      el.style.boxShadow = "0 0 8px #003366";
+      map.getCanvas().style.cursor = "move";
+    });
+    el.addEventListener("mouseleave", () => {
+      el.style.boxShadow = "0 1px 4px rgba(0,0,0,0.18)";
+      map.getCanvas().style.cursor = "";
+    });
+    // Drag behaviour (live update)
+    marker.on("drag", () => {
+      const newPos = marker.getLngLat();
+      const index = this.markers.indexOf(marker);
+      if (index !== -1) {
+        this.waypoints[index] = [newPos.lng, newPos.lat];
+        this._updateRouteSource();
+        this._updateRoutePanel();
+      }
+    });
+    marker.on("dragend", () => {
+      const newPos = marker.getLngLat();
+      const index = this.markers.indexOf(marker);
+      if (index !== -1) {
+        this.waypoints[index] = [newPos.lng, newPos.lat];
+        this._updateRouteSource();
+        this._updateRoutePanel();
+      }
+    });
+    this._updateRouteSource();
+    this._updateRoutePanel();
+  }
+
   private _pointToSegmentDistance(
     p: [number, number],
     v: [number, number],
     w: [number, number],
-  ) {
+  ): number {
+    // Calculate perpendicular distance from point p to segment vw
     const [px, py] = p;
     const [vx, vy] = v;
     const [wx, wy] = w;
-    const l2 = (wx - vx) ** 2 + (wy - vy) ** 2;
-    if (l2 === 0) return Math.hypot(px - vx, py - vy);
+    const l2 = (wx - vx) * (wx - vx) + (wy - vy) * (wy - vy);
+    if (l2 === 0)
+      return Math.sqrt((px - vx) * (px - vx) + (py - vy) * (py - vy));
     let t = ((px - vx) * (wx - vx) + (py - vy) * (wy - vy)) / l2;
     t = Math.max(0, Math.min(1, t));
     const projx = vx + t * (wx - vx);
     const projy = vy + t * (wy - vy);
-    return Math.hypot(px - projx, py - projy);
+    return Math.sqrt((px - projx) * (px - projx) + (py - projy) * (py - projy));
   }
 
+  // Add new CSS for route management UI
   private _injectPanelCSS() {
     if (document.getElementById("route-panel-style")) return;
     const s = document.createElement("style");
     s.id = "route-panel-style";
     s.textContent = `
-#route-panel { position: fixed; right: 0; top: 0; width: 350px; max-width: 95vw; height: 100%; background: #f7faff; border-left: 2px solid #b2cbe3; box-shadow: -3px 0 10px rgba(0,44,85,0.07); z-index: 11000; font-family: 'Segoe UI', Arial, sans-serif; color: #06365f; display:flex; flex-direction:column; transition: width .18s; }
-#route-panel.collapsed { width: 48px !important; overflow: hidden; height:48px !important; }
-#route-panel-header { display:flex; align-items:center; justify-content:space-between; padding:10px 10px 8px 15px; border-bottom:1px solid #d7e6f3; background:#e3f1ff; position:relative; }
-#route-panel.collapsed #route-panel-title, #route-panel.collapsed #route-panel-body, #route-panel.collapsed #route-name-header { display:none; }
-#route-panel-toggle { background:#d7e6f3; border:none; border-radius:5px; font-size:16px; width:28px; height:28px; cursor:pointer; color:#06365f; font-weight:700; position:absolute; right:10px; top:10px; }
-#route-panel-body { padding:12px 15px; overflow-y:auto; flex:1 1 auto; }
-.route-wp-table { border-collapse:collapse; width:100%; font-size:13px; margin-bottom:12px; }
-.route-wp-table th, .route-wp-table td { border-bottom:1px solid #e6ecf5; padding:2px 5px; text-align:left; }
-.route-wp-table th { background:#f2f7fb; font-weight:600; color:#074369; font-size:12px; }
-.route-wp-table input[type="text"] { background:#f4faff; border:1px solid #c6d6e7; border-radius:3px; font-size:13px; padding:2px 4px; color:#044; }
-.route-wp-table .wp-delete-btn { background:#f8d7da; color:#a33; border:none; border-radius:3px; font-size:13px; cursor:pointer; }
-#route-total-length { font-size:15px; color:#074369; margin-top:10px; }
-.route-item { background:#eaf3fc; margin-bottom:7px; border-radius:6px; padding:7px 9px; cursor:pointer; border:1px solid #d7e6f3; display:flex; align-items:center; justify-content:space-between; position:relative; }
-.route-item.active { background:#cfe2fa; border-color:#88b1e7; font-weight:600; }
-.route-actions { display:flex; gap:6px; align-items:center; }
-.route-item-details { font-size:12px; margin-top:3px; color:#044; background:#f7fbff; border-radius:4px; padding:5px 7px 4px 25px; border-left:2px solid #b2cbe3; }
+#route-panel {
+  position: fixed;
+  right: 0;
+  top: 0;
+  width: 350px;
+  max-width: 95vw;
+  height: 100%;
+  background: #f7faff;
+  border-left: 2px solid #b2cbe3;
+  box-shadow: -3px 0 10px rgba(0,44,85,0.07);
+  z-index: 11000;
+  font-family: 'Segoe UI', 'Arial', sans-serif;
+  color: #06365f;
+  display: flex;
+  flex-direction: column;
+  transition: right 0.2s, width 0.2s;
+}
+
+#route-panel.collapsed {
+  width: 48px !important;
+  height: 48px !important;
+  overflow: hidden;
+}
+
+#route-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 10px 8px 15px;
+  border-bottom: 1px solid #d7e6f3;
+  background: #e3f1ff;
+}
+
+#route-panel.collapsed #route-panel-title, #route-panel.collapsed #route-panel-body, #route-panel.collapsed #route-name-header {
+  display: none;
+}
+#route-panel.collapsed route-panel-header {
+  background: none !important;
+  border: none !important;
+  }
+#route-panel-toggle {
+  background: #d7e6f3;
+  border: none;
+  border-radius: 5px;
+  font-size: 16px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  color: #06365f;
+  font-weight: 700;
+  transition: background 0.12s;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+
+#route-panel.collapsed #route-panel-toggle {
+
+}
+#route-panel-body {
+  padding: 12px 15px 12px 15px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+.route-wp-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.route-wp-table th, .route-wp-table td {
+  border-bottom: 1px solid #e6ecf5;
+  padding: 2px 5px;
+  text-align: left;
+}
+.route-wp-table th {
+  background: #f2f7fb;
+  font-weight: 600;
+  color: #074369;
+  font-size: 12px;
+}
+.route-wp-table tr:last-child td {
+  border-bottom: none;
+}
+.route-wp-table input[type="text"] {
+  background: #f4faff;
+  border: 1px solid #c6d6e7;
+  border-radius: 3px;
+  font-size: 13px;
+  padding: 2px 4px;
+  color: #044;
+}
+.route-wp-table .wp-delete-btn {
+  background: #f8d7da;
+  color: #a33;
+  border: none;
+  border-radius: 3px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.13s;
+}
+.route-wp-table .wp-delete-btn:hover {
+  background: #e57373;
+  color: #fff;
+}
+#route-total-length {
+  font-size: 15px;
+  color: #074369;
+  margin-top: 10px;
+}
+/* Route management sidebar styles */
+.route-item {
+  background: #eaf3fc;
+  margin-bottom: 7px;
+  border-radius: 6px;
+  padding: 7px 9px 7px 9px;
+  cursor: pointer;
+  border: 1px solid #d7e6f3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: background 0.1s, border 0.1s;
+  position: relative;
+}
+.route-item.active {
+  background: #cfe2fa;
+  border-color: #88b1e7;
+  font-weight: 600;
+}
+.route-item .route-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.route-item input[type=checkbox] {
+  margin-right: 4px;
+  accent-color: #0077b6;
+}
+.route-item-details {
+  font-size: 12px;
+  margin-top: 3px;
+  color: #044;
+  background: #f7fbff;
+  border-radius: 4px;
+  padding: 5px 7px 4px 25px;
+  border-left: 2px solid #b2cbe3;
+}
 `;
     document.head.appendChild(s);
   }
 
-  // more robust predefined route loader with logs — expects /routes/index.json or route1.gpx etc.
+  // --------- Route Management Implementation ---------
+
+  // Load all .gpx files in /routes/ and add to savedRoutes
   private async _loadPredefinedRoutes() {
-    if (!this.map) return;
-    console.debug("[routes] loading predefined routes...");
-    let gpxFiles: string[] = [];
     try {
-      const indexResp = await fetch("/routes/index.json");
-      if (indexResp.ok) {
-        gpxFiles = await indexResp.json();
-        console.debug("[routes] index.json found:", gpxFiles);
-      }
-    } catch (err) {
-      console.debug(
-        "[routes] no index.json or fetch failed, falling back to enumeration",
-      );
-    }
-
-    if (gpxFiles.length === 0) {
-      // try common names route1..route10
-      for (let i = 1; i <= 10; i++) {
-        try {
-          const u = `/routes/route${i}.gpx`;
-          const r = await fetch(u, { method: "HEAD" });
-          if (r.ok) {
-            gpxFiles.push(`route${i}.gpx`);
-          }
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-
-    if (gpxFiles.length === 0)
-      console.debug("[routes] no predefined GPX files discovered in /routes/");
-
-    for (const fname of gpxFiles) {
+      // Try to get a file list from /routes/
+      // We'll attempt to fetch /routes/index.json (generated by server or build step),
+      // otherwise fallback to a fixed set or fail gracefully.
+      let gpxFiles: string[] = [];
       try {
-        const resp = await fetch(`/routes/${fname}`);
-        if (!resp.ok) {
-          console.warn(`[routes] failed to fetch ${fname}: ${resp.status}`);
-          continue;
+        const indexResp = await fetch("/routes/index.json");
+        if (indexResp.ok) {
+          gpxFiles = await indexResp.json();
         }
-        const xml = await resp.text();
-        const parsed = this._parseGpxToWaypoints(xml);
-        if (parsed.waypoints.length > 0) {
-          this.savedRoutes.push({
-            name: parsed.name || fname.replace(/\.gpx$/i, ""),
-            waypoints: parsed.waypoints,
-            waypointNames: parsed.waypointNames,
-            visible: false,
-            active: false,
-          });
-          console.debug(
-            `[routes] loaded ${fname} (${parsed.waypoints.length} wpts)`,
-          );
+      } catch (e) {
+        // fallback: try GET /routes/0.gpx, 1.gpx, ... up to 10
+        gpxFiles = [];
+        for (let i = 0; i < 10; ++i) {
+          try {
+            const testUrl = `/routes/${i}.gpx`;
+            const resp = await fetch(testUrl, { method: "HEAD" });
+            if (resp.ok) gpxFiles.push(`${i}.gpx`);
+          } catch {
+            // ignore
+          }
         }
-      } catch (err) {
-        console.warn(`[routes] error reading ${fname}`, err);
       }
+      // If still empty, fallback to static demo
+      if (gpxFiles.length === 0) {
+        // Try to fetch /routes/route1.gpx, /routes/route2.gpx
+        for (let i = 1; i <= 2; ++i) {
+          try {
+            const resp = await fetch(`/routes/route${i}.gpx`, {
+              method: "HEAD",
+            });
+            if (resp.ok) gpxFiles.push(`route${i}.gpx`);
+          } catch {}
+        }
+      }
+      // For each GPX file found, fetch and parse
+      for (const fname of gpxFiles) {
+        try {
+          const resp = await fetch(`/routes/${fname}`);
+          if (!resp.ok) continue;
+          const xml = await resp.text();
+          const parsed = this._parseGpxToWaypoints(xml);
+          if (parsed && parsed.waypoints.length > 0) {
+            this.savedRoutes.push({
+              name: parsed.name || fname.replace(/\.gpx$/i, ""),
+              waypoints: parsed.waypoints,
+              waypointNames: parsed.waypointNames,
+              visible: false,
+              active: false,
+            });
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+      this._renderSavedRoutes();
+    } catch (err) {
+      // ignore
     }
-    this._renderSavedRoutes();
   }
 
+  // Parse GPX XML to waypoints and names
   private _parseGpxToWaypoints(xml: string): {
     name: string;
     waypoints: [number, number][];
@@ -1010,6 +1142,7 @@ class RouteDrawControl implements maplibregl.IControl {
     let name = "";
     let waypoints: [number, number][] = [];
     let waypointNames: string[] = [];
+    // Try <rtept> first
     const rtepts = Array.from(doc.getElementsByTagName("rtept"));
     if (rtepts.length > 0) {
       waypoints = rtepts.map((el) => [
@@ -1021,6 +1154,7 @@ class RouteDrawControl implements maplibregl.IControl {
         return n.length > 0 ? n[0].textContent || "" : "";
       });
     } else {
+      // Try <trkpt>
       const trkpts = Array.from(doc.getElementsByTagName("trkpt"));
       waypoints = trkpts.map((el) => [
         parseFloat(el.getAttribute("lon") || "0"),
@@ -1028,11 +1162,15 @@ class RouteDrawControl implements maplibregl.IControl {
       ]);
       waypointNames = trkpts.map(() => "");
     }
+    // Try to get route name
     const nameElem = doc.querySelector("rte > name, trk > name, gpx > name");
-    if (nameElem && nameElem.textContent) name = nameElem.textContent;
+    if (nameElem && nameElem.textContent) {
+      name = nameElem.textContent;
+    }
     return { name, waypoints, waypointNames };
   }
 
+  // Render the saved routes list in sidebar
   private _renderSavedRoutes() {
     const listDiv = this.routePanel?.querySelector(
       "#saved-routes-list",
@@ -1046,6 +1184,7 @@ class RouteDrawControl implements maplibregl.IControl {
     this.savedRoutes.forEach((route, idx) => {
       const div = document.createElement("div");
       div.className = "route-item" + (route.active ? " active" : "");
+      // Show on Chart checkbox
       const visibleBox = document.createElement("input");
       visibleBox.type = "checkbox";
       visibleBox.checked = !!route.visible;
@@ -1054,29 +1193,32 @@ class RouteDrawControl implements maplibregl.IControl {
         ev.stopPropagation();
         this._toggleRouteVisibility(idx);
       };
-
+      // Route name clickable
       const nameSpan = document.createElement("span");
       nameSpan.textContent = route.name;
       nameSpan.style.flex = "1";
       nameSpan.style.userSelect = "none";
       nameSpan.style.marginLeft = "5px";
       nameSpan.style.fontWeight = route.active ? "700" : "500";
-
+      // Expand/collapse details
       let expanded = !!route.active;
       const detailsDiv = document.createElement("div");
       detailsDiv.className = "route-item-details";
       detailsDiv.style.display = expanded ? "block" : "none";
-      detailsDiv.innerHTML = `Waypoints: ${route.waypoints.length}<br>Total: ${this._routeTotalDistance(route).toFixed(2)} NM`;
-
+      detailsDiv.innerHTML = `
+        Waypoints: ${route.waypoints.length}
+        <br>Total: ${this._routeTotalDistance(route).toFixed(2)} NM
+      `;
       nameSpan.onclick = (ev) => {
         ev.stopPropagation();
         expanded = !expanded;
         detailsDiv.style.display = expanded ? "block" : "none";
         this._setActiveRoute(idx);
       };
-
+      // Actions: Export, Delete
       const actions = document.createElement("span");
       actions.className = "route-actions";
+      // Export button
       const exportBtn = document.createElement("button");
       exportBtn.textContent = "Export";
       exportBtn.title = "Export GPX";
@@ -1084,6 +1226,7 @@ class RouteDrawControl implements maplibregl.IControl {
         ev.stopPropagation();
         this._exportSavedRoute(idx);
       };
+      // Delete button
       const delBtn = document.createElement("button");
       delBtn.textContent = "Delete";
       delBtn.title = "Delete Route";
@@ -1094,22 +1237,21 @@ class RouteDrawControl implements maplibregl.IControl {
       };
       actions.appendChild(exportBtn);
       actions.appendChild(delBtn);
-
       div.appendChild(visibleBox);
       div.appendChild(nameSpan);
       div.appendChild(actions);
       div.appendChild(detailsDiv);
-
+      // Clicking anywhere else on route item sets as active and expands
       div.onclick = () => {
         expanded = !expanded;
         detailsDiv.style.display = expanded ? "block" : "none";
         this._setActiveRoute(idx);
       };
-
       listDiv.appendChild(div);
     });
   }
 
+  // Set one route as active, update editing state
   private _setActiveRoute(index: number) {
     if (index < 0 || index >= this.savedRoutes.length) return;
     this.savedRoutes.forEach((r, i) => (r.active = i === index));
@@ -1118,129 +1260,129 @@ class RouteDrawControl implements maplibregl.IControl {
     this._renderSavedRoutes();
     this._updateRoutePanel();
     this._updateRouteSource();
-    this.updateActiveRouteData(this.waypoints);
   }
 
+  // Sync editor state to currently active route
   private _syncActiveRouteToEditor() {
-    // remove old markers
+    // Remove all markers
     for (const m of this.markers) m.remove();
     this.markers = [];
-
     if (
       this.activeRouteIndex >= 0 &&
       this.activeRouteIndex < this.savedRoutes.length
     ) {
       const route = this.savedRoutes[this.activeRouteIndex];
       this.routeName = route.name;
+      // Deep copy
       this.waypoints = route.waypoints.map((p) => [...p]);
-      this.waypointNames = route.waypointNames.map((n) => n);
-      // create markers at indexes (no double-push)
-      for (let i = 0; i < this.waypoints.length; ++i)
-        this._createMarkerAt(
-          i,
-          this.waypoints[i],
-          this.waypointNames[i] || "",
-          false,
-        );
-      this._updateRouteSource();
-      this.updateActiveRouteData(this.waypoints);
+      this.waypointNames = [...route.waypointNames];
+      // Add markers for waypoints
+      for (const coord of this.waypoints) {
+        this.addWaypoint(coord);
+      }
+      // Remove duplicate points (since addWaypoint pushes)
+      if (this.markers.length > this.waypoints.length) {
+        this.markers.splice(this.waypoints.length).forEach((m) => m.remove());
+      }
     } else {
       this.routeName = "";
       this.waypoints = [];
       this.waypointNames = [];
-      this.markers.forEach((m) => m.remove());
-      this.markers = [];
     }
   }
 
+  // Toggle route line visibility on map
   private _toggleRouteVisibility(index: number) {
     if (!this.map) return;
     const route = this.savedRoutes[index];
     route.visible = !route.visible;
-    if (route.visible) this._addRouteLayers(index);
-    else this._removeRouteLayers(index);
+    if (route.visible) {
+      this._addRouteLayers(index);
+    } else {
+      this._removeRouteLayers(index);
+    }
     this._renderSavedRoutes();
   }
 
+  // Add route line/point layers to map for this route
   private _addRouteLayers(index: number) {
     if (!this.map) return;
     const route = this.savedRoutes[index];
+    // Remove old layers if any
     this._removeRouteLayers(index);
     const sourceId = `route-src-${index}`;
     const lineLayerId = `route-line-${index}`;
     const pointLayerId = `route-points-${index}`;
-
+    // Add GeoJSON source
     const features: any[] = [];
-    if (route.waypoints.length >= 2)
+    if (route.waypoints.length >= 2) {
       features.push({
         type: "Feature",
         geometry: { type: "LineString", coordinates: route.waypoints },
         properties: {},
       });
-    for (let i = 0; i < route.waypoints.length; ++i)
+    }
+    for (let i = 0; i < route.waypoints.length; ++i) {
       features.push({
         type: "Feature",
         geometry: { type: "Point", coordinates: route.waypoints[i] },
         properties: { name: route.waypointNames[i] || "" },
       });
-
-    try {
-      this.map.addSource(sourceId, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features },
-      });
-      this.map.addLayer({
-        id: lineLayerId,
-        type: "line",
-        source: sourceId,
-        paint: {
-          "line-color": "#0077b6",
-          "line-width": 3,
-          "line-dasharray": [2, 2],
-        },
-      });
-      this.map.addLayer({
-        id: pointLayerId,
-        type: "circle",
-        source: sourceId,
-        paint: {
-          "circle-radius": 6,
-          "circle-color": "#2a7ecf",
-          "circle-stroke-color": "#fff",
-          "circle-stroke-width": 2,
-        },
-      });
-      route.sourceId = sourceId;
-      route.lineLayerId = lineLayerId;
-      route.pointLayerId = pointLayerId;
-    } catch (err) {
-      console.warn("[routes] failed to add route layers for index", index, err);
     }
+    this.map.addSource(sourceId, {
+      type: "geojson",
+      data: { type: "FeatureCollection", features },
+    });
+    this.map.addLayer({
+      id: lineLayerId,
+      type: "line",
+      source: sourceId,
+      paint: {
+        "line-color": "#0077b6",
+        "line-width": 3,
+        "line-dasharray": [2, 2],
+      },
+    });
+    this.map.addLayer({
+      id: pointLayerId,
+      type: "circle",
+      source: sourceId,
+      paint: {
+        "circle-radius": 6,
+        "circle-color": "#2a7ecf",
+        "circle-stroke-color": "#fff",
+        "circle-stroke-width": 2,
+      },
+    });
+    route.sourceId = sourceId;
+    route.lineLayerId = lineLayerId;
+    route.pointLayerId = pointLayerId;
   }
 
+  // Remove route line/point layers from map
   private _removeRouteLayers(index: number) {
     if (!this.map) return;
     const route = this.savedRoutes[index];
-    if (!route) return;
-    try {
-      if (route.lineLayerId && this.map.getLayer(route.lineLayerId))
-        this.map.removeLayer(route.lineLayerId);
-      if (route.pointLayerId && this.map.getLayer(route.pointLayerId))
-        this.map.removeLayer(route.pointLayerId);
-      if (route.sourceId && this.map.getSource(route.sourceId))
-        this.map.removeSource(route.sourceId);
-    } catch (err) {
-      console.warn("[routes] error removing layers for index", index, err);
+    if (route.lineLayerId && this.map.getLayer(route.lineLayerId)) {
+      this.map.removeLayer(route.lineLayerId);
+    }
+    if (route.pointLayerId && this.map.getLayer(route.pointLayerId)) {
+      this.map.removeLayer(route.pointLayerId);
+    }
+    if (route.sourceId && this.map.getSource(route.sourceId)) {
+      this.map.removeSource(route.sourceId);
     }
     route.lineLayerId = undefined;
     route.pointLayerId = undefined;
     route.sourceId = undefined;
   }
 
+  // Delete a saved route and its map layers
   private _deleteSavedRoute(index: number) {
     if (!this.map) return;
     this._removeRouteLayers(index);
     this.savedRoutes.splice(index, 1);
+    // If deleted route was active, select another or clear
     if (this.activeRouteIndex === index) {
       if (this.savedRoutes.length > 0) {
         this.activeRouteIndex = 0;
@@ -1248,32 +1390,28 @@ class RouteDrawControl implements maplibregl.IControl {
         this._syncActiveRouteToEditor();
       } else {
         this.activeRouteIndex = -1;
+        this.routeName = "";
         this.waypoints = [];
         this.waypointNames = [];
-        this.markers.forEach((m) => m.remove());
+        for (const m of this.markers) m.remove();
         this.markers = [];
-        this.routeName = "";
       }
     } else if (this.activeRouteIndex > index) {
       this.activeRouteIndex--;
     }
-    // rebuild visible route layers to keep source/layer ids consistent with index
-    for (let i = 0; i <= this.savedRoutes.length; ++i)
-      this._removeRouteLayers(i);
-    for (let i = 0; i < this.savedRoutes.length; ++i)
-      if (this.savedRoutes[i].visible) this._addRouteLayers(i);
     this._renderSavedRoutes();
     this._updateRoutePanel();
     this._updateRouteSource();
-    this.updateActiveRouteData(this.waypoints);
   }
 
+  // Export a saved route to GPX
   private _exportSavedRoute(index: number) {
     const route = this.savedRoutes[index];
     if (!route || route.waypoints.length === 0) {
       alert("No waypoints to export.");
       return;
     }
+    // Build GPX with named waypoints and track
     const now = new Date().toISOString();
     let gpx = `<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
 <gpx version="1.1" creator="bluECS" xmlns="http://www.topografix.com/GPX/1/1">
@@ -1305,6 +1443,7 @@ class RouteDrawControl implements maplibregl.IControl {
     );
   }
 
+  // Finalize the current editing route and save to savedRoutes
   private _finalizeCurrentRoute() {
     if (
       this.activeRouteIndex >= 0 &&
@@ -1319,66 +1458,47 @@ class RouteDrawControl implements maplibregl.IControl {
       ];
       this.savedRoutes[this.activeRouteIndex].visible = true;
       this.savedRoutes[this.activeRouteIndex].active = true;
-      // add route layers for the saved route
-      this._addRouteLayers(this.activeRouteIndex);
+      // Add layers if visible
+      if (this.savedRoutes[this.activeRouteIndex].visible) {
+        this._addRouteLayers(this.activeRouteIndex);
+      }
     }
   }
 
   private _routeTotalDistance(route: { waypoints: [number, number][] }) {
     let tot = 0;
-    for (let i = 1; i < route.waypoints.length; ++i)
+    for (let i = 1; i < route.waypoints.length; ++i) {
       tot += haversineNm(route.waypoints[i - 1], route.waypoints[i]);
+    }
     return tot;
   }
 }
 
-/* --- add controls after map idle (safe for MaplibreInspect / tiles) --- */
+// Wait until map has finished loading to add custom controls
 map.on("load", () => {
-  // add controls that are safe on load
+  // Add working controls
   map.addControl(new CursorCoordControl(), "bottom-left");
   map.addControl(new MeasureControl(), "bottom-left");
-  map.addControl(new RouteDrawControl(), "top-right");
+  map.addControl(new RouteDrawControl(), "top-left");
 
-  // wait for 'idle' event (style and initial tiles finished) before adding MaplibreInspect
-  map.once("idle", () => {
-    try {
-      // create the inspect control first so we can defensively wrap its internal method
-      const inspect = new MaplibreInspect({ popup: new Popup({}) });
-
-      // Defensive wrapper for MaplibreInspect._setSourcesFromMap which assumes map.style.sourceCaches
-      // This prevents intermittent errors where the style or sourceCaches are not yet available
-      // during certain tile events. We wrap the instance method rather than patching the library
-      // globally.
-      try {
-        const orig = (inspect as any)._setSourcesFromMap;
-        (inspect as any)._setSourcesFromMap = function (...args: any[]) {
-          try {
-            if (!this._map || !this._map.style || !this._map.style.sourceCaches)
-              return;
-          } catch (e) {
-            // if anything unexpected occurs, bail out gracefully
-            return;
-          }
-          if (typeof orig === "function") return orig.apply(this, args);
-        };
-      } catch (e) {
-        // if wrapping fails, continue — we'll still try to add the control
-        console.warn("[map] failed to wrap MaplibreInspect internals:", e);
-      }
-
-      map.addControl(inspect, "top-left");
-      console.debug("[map] MaplibreInspect added after idle (wrapped).");
-    } catch (err) {
-      console.warn("[map] failed to add MaplibreInspect:", err);
-    }
-  });
-
-  // small style tag for control aesthetics
+  // Add style to ensure they’re visible
   const styleTag = document.createElement("style");
   styleTag.textContent = `
-  .maplibregl-ctrl { margin: 6px; z-index: 10 !important; position: relative !important; }
-  .maplibregl-ctrl button { background-color: white; border: 1px solid #ccc; border-radius: 4px; cursor:pointer; }
-  .maplibregl-ctrl button:hover { background-color: #eee; }
+  .maplibregl-ctrl {
+    margin: 6px;
+    z-index: 10 !important;
+    position: relative !important;
+  }
+  .maplibregl-ctrl button {
+    background: white;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    padding: 4px 8px;
+    cursor: pointer;
+  }
+  .maplibregl-ctrl button:hover {
+    background: #eee;
+  }
   .cursor-coord-control { min-width: 170px; text-align: left; }
   #measure-popup { z-index: 9999; }
   `;

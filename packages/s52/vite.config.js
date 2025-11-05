@@ -1,7 +1,6 @@
 // vite.config.js
 import { defineConfig } from "vite";
 import { resolve } from "path";
-import copy from "rollup-plugin-copy";
 import buildData from "./build/data.js";
 import buildColours from "./build/colours.js";
 import buildSymbols from "./build/symbols.js";
@@ -22,9 +21,5 @@ export default defineConfig({
     buildSymbols,
     buildSprites,
     buildSpritecss,
-    copy({
-      targets: [{ src: "src/routes/*", dest: "dist/routes" }],
-      hook: "writeBundle",
-    }),
   ],
 });

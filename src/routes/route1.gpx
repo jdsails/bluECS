@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<gpx version="1.1" creator="bluECS" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata><time>2025-11-04T16:42:42.605Z</time></metadata>
+  <rte>
+    <name>Day Skipper Route</name>
+    <rtept lat="46.078211" lon="-5.885614"><name>Do something here</name></rtept>
+    <rtept lat="46.077760" lon="-6.058409"><name>Do something else here</name></rtept>
+    <rtept lat="46.092854" lon="-6.168517"><name>As you wish here</name></rtept>
+    <rtept lat="46.114474" lon="-6.196775"><name>Pure testing</name></rtept>
+    <rtept lat="46.148012" lon="-6.264010"><name>Done</name></rtept>
+  </rte>
+  <trk>
+    <name>Route 1</name>
+    <trkseg>
+      <trkpt lat="46.078211" lon="-5.885614"></trkpt>
+      <trkpt lat="46.077760" lon="-6.058409"></trkpt>
+      <trkpt lat="46.092854" lon="-6.168517"></trkpt>
+      <trkpt lat="46.114474" lon="-6.196775"></trkpt>
+      <trkpt lat="46.148012" lon="-6.264010"></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

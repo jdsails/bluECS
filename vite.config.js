@@ -1,5 +1,6 @@
 // vite.config.js
 import { defineConfig } from "vite";
+import copy from "rollup-plugin-copy";
 
 export default defineConfig({
   esbuild: {
@@ -10,4 +11,10 @@ export default defineConfig({
     outDir: "dist",
     modulePreload: false,
   },
+  plugins: [
+    copy({
+      targets: [{ src: "src/routes/*", dest: "dist/routes" }],
+      hook: "writeBundle",
+    }),
+  ],
 });
