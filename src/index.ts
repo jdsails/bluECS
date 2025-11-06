@@ -941,7 +941,7 @@ class RouteDrawControl implements maplibregl.IControl {
     console.debug("[routes] loading predefined routes...");
     let gpxFiles: string[] = [];
     try {
-      const indexResp = await fetch("/routes/index.json");
+      const indexResp = await fetch("./routes/index.json");
       if (indexResp.ok) {
         gpxFiles = await indexResp.json();
         console.debug("[routes] index.json found:", gpxFiles);
@@ -956,7 +956,7 @@ class RouteDrawControl implements maplibregl.IControl {
       // try common names route1..route10
       for (let i = 1; i <= 10; i++) {
         try {
-          const u = `/routes/route${i}.gpx`;
+          const u = `./routes/route${i}.gpx`;
           const r = await fetch(u, { method: "HEAD" });
           if (r.ok) {
             gpxFiles.push(`route${i}.gpx`);
@@ -968,11 +968,11 @@ class RouteDrawControl implements maplibregl.IControl {
     }
 
     if (gpxFiles.length === 0)
-      console.debug("[routes] no predefined GPX files discovered in /routes/");
+      console.debug("[routes] no predefined GPX files discovered in ./routes/");
 
     for (const fname of gpxFiles) {
       try {
-        const resp = await fetch(`/routes/${fname}`);
+        const resp = await fetch(`./routes/${fname}`);
         if (!resp.ok) {
           console.warn(`[routes] failed to fetch ${fname}: ${resp.status}`);
           continue;
