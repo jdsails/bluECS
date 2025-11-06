@@ -17,7 +17,7 @@ const tileset = import.meta.env.VITE_TILESET;
 const tilesUrl =
   import.meta.env.VITE_TILES_URL && import.meta.env.VITE_TILES_URL.trim() !== ""
     ? import.meta.env.VITE_TILES_URL
-    : window.location.origin + "/charts/";
+    : new URL("charts/", window.location.href).toString();
 
 const protocol = new Protocol({ metadata: true });
 addProtocol("pmtiles", protocol.tile);
