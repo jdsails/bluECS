@@ -11,6 +11,9 @@ import {
 import MaplibreInspect from "@maplibre/maplibre-gl-inspect";
 import { Protocol, PMTiles } from "pmtiles";
 import createStyle from "@enc-tiles/styles";
+import "@oicl/openbridge-webcomponents/dist";
+import "@oicl/openbridge-webcomponents/src/palettes/variables.css";
+import "@oicl/openbridge-webcomponents/dist/icons/icon-route-export-iec.js";
 
 /* --- PMTiles / style / map setup --- */
 const tileset = import.meta.env.VITE_TILESET;
@@ -278,10 +281,30 @@ class RouteDrawControl implements maplibregl.IControl {
           <span id="route-panel-title">Route Manager</span>
           <button id="route-panel-toggle" title="Collapse">&raquo;</button>
         </div>
-        <div id="route-toolbar" style="padding:10px 15px 0 15px;">
-          <button id="route-toolbar-start">New Route</button>
-          <button id="route-toolbar-stop" disabled style="margin-left:6px;">End Route</button>
-          <button id="route-toolbar-export" style="margin-left:6px;">Export GPX</button>
+        <div id="route-toolbar" style="padding:10px 15px 0 15px; display:flex; gap:6px; align-items:center;">
+          <button id="route-toolbar-start" title="Start New Route" class="obc-btn">
+            <obc-icon name="add" size="small"></obc-icon>
+          </button>
+          <button id="route-toolbar-stop" title="End Route" class="obc-btn" disabled>
+            <obc-icon name="stop" size="small"></obc-icon>
+          </button>
+<button id="route-toolbar-export" title="Export GPX" style="
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--obc-button-background, #f8faff);
+    border: 1px solid var(--obc-border-color, #b2cbe3);
+    color: var(--obc-text-color, #06365f);
+    border-radius: 4px;
+    padding: 4px;
+    cursor: pointer;
+    transition: background 0.2s;">
+  <obc-icon-route-export-iec style="
+      width: 20px;
+      height: 20px;
+      fill: var(--obc-icon-color, #06365f);
+    "></obc-icon-route-export-iec>
+</button>
         </div>
         <div id="route-panel-body">
           <div style="margin-bottom:10px;">
@@ -481,6 +504,7 @@ class RouteDrawControl implements maplibregl.IControl {
         this._updateRouteSource();
         this.updateActiveRouteData(this.waypoints);
         this._updateRoutePanel();
+        this._finalizeCurrentRoute();
       }
     });
 
@@ -732,6 +756,7 @@ class RouteDrawControl implements maplibregl.IControl {
     this._updateRouteSource();
     this.updateActiveRouteData(this.waypoints);
     this._updateRoutePanel();
+    this._finalizeCurrentRoute();
   }
 
   exportGpx() {

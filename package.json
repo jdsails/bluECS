@@ -29,6 +29,7 @@
     "**/*": "prettier --write --ignore-unknown"
   },
   "dependencies": {
+    "@oicl/openbridge-webcomponents": "^0.0.17",
     "async": "^3.2.6"
   }
 }
