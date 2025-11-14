@@ -1,0 +1,11 @@
+# Use an official Node LTS
+FROM mcr.microsoft.com/vscode/devcontainers/javascript-node:18
+
+# Install pnpm (optional)
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Create workspace directory
+WORKDIR /workspaces/bluECS
+
+# Expose default Vite port
+EXPOSE 5173
